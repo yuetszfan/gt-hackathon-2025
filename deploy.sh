@@ -1,170 +1,202 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# deploy.sh
+# Cross-platform helper to ensure PostgreSQL 14+ is available (prefers Docker).
+#
+# Usage: ./deploy.sh
+# Notes:
+#  - If Docker is available, this will create and run a postgres:14 container named "gthack-postgres"
+#    with a persistent volume "gt_hack_postgres_data".
+#  - If Docker is not available, and apt is present, it will attempt to install postgresql-14 via apt.
+#  - On success, the script will create/update a .env.local file with DATABASE_URL.
 
-# Deployment script for PDF Processing with BioBERT and PostgreSQL
-# This script sets up the database and Python service
+set -euo pipefail
 
-set -e  # Exit on error
+POSTGRES_CONTAINER_NAME="gthack-postgres"
+POSTGRES_VOLUME="gt_hack_postgres_data"
+POSTGRES_IMAGE="postgres:14"
+POSTGRES_PORT=5432
+PG_USER="${PG_USER:-gtuser}"
+PG_PASSWORD="${PG_PASSWORD:-gtpass}"
+PG_DB="${PG_DB:-gtdb}"
+ENV_FILE=".env.local"
 
-echo "========================================"
-echo "Medical Device PDF Processing Deployment"
-echo "========================================"
-echo ""
+info() { echo -e "\033[1;34m[INFO]\033[0m $*"; }
+warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
+err() { echo -e "\033[1;31m[ERROR]\033[0m $*"; }
 
-# Check if running as root for PostgreSQL installation
-if [ "$EUID" -eq 0 ]; then 
-   echo "Please do not run as root. Run as regular user."
-   exit 1
-fi
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# Wait until psql can connect
+wait_for_postgres() {
+  local host="${1:-localhost}"
+  local port="${2:-$POSTGRES_PORT}"
+  local retries=30
+  local wait=1
 
-# Step 1: Check prerequisites
-echo -e "${YELLOW}Step 1: Checking prerequisites...${NC}"
+  info "Waiting for Postgres at ${host}:${port} to accept connections..."
+  for i in $(seq 1 $retries); do
+    if PGPASSWORD="$PG_PASSWORD" psql -h "$host" -p "$port" -U "$PG_USER" -d "$PG_DB" -c '\q' >/dev/null 2>&1; then
+      info "Postgres is ready!"
+      return 0
+    fi
+    sleep "$wait"
+  done
 
-# Check if PostgreSQL is installed
-if ! command -v psql &> /dev/null; then
-    echo -e "${RED}PostgreSQL is not installed.${NC}"
-    echo "Please install PostgreSQL 14+ first:"
-    echo "  sudo apt-get update"
-    echo "  sudo apt-get install postgresql-14 postgresql-contrib"
-    exit 1
-fi
-echo -e "${GREEN}✓ PostgreSQL is installed${NC}"
+  return 1
+}
 
-# Check if Python is installed
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}Python 3 is not installed.${NC}"
-    echo "Please install Python 3.8+ first:"
-    echo "  sudo apt-get install python3 python3-pip"
-    exit 1
-fi
-echo -e "${GREEN}✓ Python 3 is installed${NC}"
+# Write DATABASE_URL to .env.local (append if not already present)
+write_env() {
+  local db_url="postgresql://${PG_USER}:${PG_PASSWORD}@localhost:${POSTGRES_PORT}/${PG_DB}"
+  if [ -f "$ENV_FILE" ]; then
+    if grep -q "^DATABASE_URL=" "$ENV_FILE"; then
+      info "$ENV_FILE already contains DATABASE_URL, leaving it unchanged."
+      return
+    fi
+  fi
 
-# Check if Node.js is installed
-if ! command -v node &> /dev/null; then
-    echo -e "${RED}Node.js is not installed.${NC}"
-    echo "Please install Node.js 20+ first"
-    exit 1
-fi
-echo -e "${GREEN}✓ Node.js is installed${NC}"
+  info "Writing DATABASE_URL to $ENV_FILE"
+  cat >> "$ENV_FILE" <<EOF
 
-echo ""
+# Added by deploy.sh
+DATABASE_URL=${db_url}
+PGUSER=${PG_USER}
+PGPASSWORD=${PG_PASSWORD}
+PGDATABASE=${PG_DB}
+PGHOST=localhost
+PGPORT=${POSTGRES_PORT}
+EOF
+}
 
-# Step 2: Install pgvector extension
-echo -e "${YELLOW}Step 2: Installing pgvector extension...${NC}"
-if [ ! -d "/tmp/pgvector" ]; then
-    cd /tmp
-    git clone https://github.com/pgvector/pgvector.git
-    cd pgvector
-    make
-    sudo make install
-    echo -e "${GREEN}✓ pgvector installed${NC}"
+# 1) Quick check: is psql installed already and can it connect?
+if command_exists psql; then
+  info "psql command found. Checking Postgres connectivity..."
+  if PGPASSWORD="${PG_PASSWORD}" psql -h "localhost" -p "${POSTGRES_PORT}" -U "${PG_USER}" -d "${PG_DB}" -c '\q' >/dev/null 2>&1; then
+    info "Local Postgres is reachable and credentials work (user=${PG_USER}, db=${PG_DB})."
+    write_env
+    info "Prerequisites satisfied. Continue with your deployment steps."
+    exit 0
+  else
+    warn "psql found but cannot connect with default credentials. Will attempt to provision Postgres (Docker or apt)."
+  fi
 else
-    echo -e "${GREEN}✓ pgvector already downloaded${NC}"
+  info "psql not found on PATH."
 fi
 
-echo ""
+# 2) If Docker exists, use Docker to run Postgres 14
+if command_exists docker; then
+  info "Docker detected. Using Docker to run postgres:14 container."
 
-# Step 3: Create database
-echo -e "${YELLOW}Step 3: Setting up PostgreSQL database...${NC}"
+  # Ensure Docker daemon is accessible
+  if ! docker info >/dev/null 2>&1; then
+    err "Docker does not appear to be running or accessible. Please start Docker Desktop / dockerd and re-run."
+    exit 1
+  fi
 
-# Get database credentials
-read -p "PostgreSQL username [postgres]: " PG_USER
-PG_USER=${PG_USER:-postgres}
+  # Create a named volume for persistence if not exists
+  if ! docker volume inspect "$POSTGRES_VOLUME" >/dev/null 2>&1; then
+    info "Creating docker volume $POSTGRES_VOLUME"
+    docker volume create "$POSTGRES_VOLUME" >/dev/null
+  fi
 
-read -p "Database name [medicus]: " PG_DB
-PG_DB=${PG_DB:-medicus}
+  # If the container is already running, skip run
+  if docker ps --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER_NAME}$"; then
+    info "Postgres container '${POSTGRES_CONTAINER_NAME}' is already running."
+  else
+    # If container exists but stopped, remove it to start fresh
+    if docker ps -a --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER_NAME}$"; then
+      info "Removing existing stopped container ${POSTGRES_CONTAINER_NAME}"
+      docker rm "${POSTGRES_CONTAINER_NAME}" >/dev/null
+    fi
 
-echo "Creating database '$PG_DB'..."
-sudo -u postgres psql -c "CREATE DATABASE $PG_DB;" 2>/dev/null || echo "Database may already exist"
+    info "Starting postgres container '${POSTGRES_CONTAINER_NAME}' (image ${POSTGRES_IMAGE})..."
+    docker run -d \
+      --name "${POSTGRES_CONTAINER_NAME}" \
+      -e POSTGRES_USER="${PG_USER}" \
+      -e POSTGRES_PASSWORD="${PG_PASSWORD}" \
+      -e POSTGRES_DB="${PG_DB}" \
+      -p "${POSTGRES_PORT}:5432" \
+      -v "${POSTGRES_VOLUME}:/var/lib/postgresql/data" \
+      --health-cmd='pg_isready -U '"${PG_USER}" \
+      --health-interval=5s \
+      --health-timeout=5s \
+      --health-retries=6 \
+      "${POSTGRES_IMAGE}" >/dev/null
 
-echo "Applying schema..."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-sudo -u postgres psql -d $PG_DB -f "$SCRIPT_DIR/src/backend/src/db/schema.sql"
+    sleep 1
+  fi
 
-echo -e "${GREEN}✓ Database setup complete${NC}"
-echo ""
+  # Wait until the DB is ready; ensure psql exists (install psql client if not)
+  if ! command_exists psql; then
+    warn "psql client not found. Installing minimal 'psql' client inside a temporary container to run checks."
+    # Use ephemeral postgres client container to verify readiness
+    for i in $(seq 1 30); do
+      if docker run --rm --network host "${POSTGRES_IMAGE}" pg_isready -h "localhost" -p "${POSTGRES_PORT}" -U "${PG_USER}" >/dev/null 2>&1; then
+        info "Postgres container is accepting connections."
+        break
+      fi
+      sleep 1
+    done
+  else
+    if ! wait_for_postgres "localhost" "${POSTGRES_PORT}"; then
+      err "Timed out waiting for Postgres to start in Docker."
+      exit 1
+    fi
+  fi
 
-# Step 4: Set up Python service
-echo -e "${YELLOW}Step 4: Setting up Python PDF processing service...${NC}"
-
-cd "$SCRIPT_DIR/python-service"
-
-# Create virtual environment
-if [ ! -d "venv" ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv venv
+  write_env
+  info "Postgres (Docker) is ready and DATABASE_URL written to ${ENV_FILE}."
+  exit 0
 fi
 
-# Activate virtual environment
-source venv/bin/activate
+# 3) If apt-get exists, attempt to install postgresql-14 (Debian/Ubuntu)
+if command_exists apt-get; then
+  warn "Docker not found. Attempting to install postgresql-14 via apt (requires sudo)."
 
-# Install dependencies
-echo "Installing Python dependencies (this may take several minutes)..."
-pip install --upgrade pip
-pip install -r requirements.txt
+  if ! command_exists sudo; then
+    err "sudo is required to install packages via apt. Please run this script as root or install Docker instead."
+    exit 1
+  fi
 
-echo -e "${GREEN}✓ Python service setup complete${NC}"
-echo ""
+  info "Updating apt repositories..."
+  sudo apt-get update
 
-# Step 5: Create environment file
-echo -e "${YELLOW}Step 5: Configuring environment variables...${NC}"
+  info "Installing PostgreSQL 14 and contrib packages..."
+  # Try explicit package name first
+  if sudo apt-get install -y postgresql-14 postgresql-client-14 postgresql-contrib; then
+    info "PostgreSQL 14 installed via apt."
+  else
+    warn "Could not install postgresql-14 package (may not be available on this distro). Trying 'postgresql' (default version from distro)..."
+    sudo apt-get install -y postgresql postgresql-contrib
+  fi
 
-cd "$SCRIPT_DIR"
+  info "Starting/restarting PostgreSQL service..."
+  sudo systemctl enable --now postgresql
 
-if [ ! -f ".env" ]; then
-    cp .env.example .env
-    echo "Created .env file from template"
-    
-    # Update .env with database credentials
-    sed -i "s/POSTGRES_USER=postgres/POSTGRES_USER=$PG_USER/" .env
-    sed -i "s/POSTGRES_DB=medicus/POSTGRES_DB=$PG_DB/" .env
-    
-    read -s -p "Enter PostgreSQL password: " PG_PASSWORD
-    echo ""
-    sed -i "s/POSTGRES_PASSWORD=your_password_here/POSTGRES_PASSWORD=$PG_PASSWORD/" .env
-    
-    read -p "Enter OpenAI API key: " OPENAI_KEY
-    sed -i "s/OPENAI_API_KEY=your_openai_api_key_here/OPENAI_API_KEY=$OPENAI_KEY/" .env
-    
-    echo -e "${GREEN}✓ Environment variables configured${NC}"
-else
-    echo -e "${YELLOW}! .env file already exists, skipping${NC}"
+  info "Creating DB user and database (if not exists)..."
+  # Create user with password and DB
+  sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='${PG_USER}'" | grep -q 1 || sudo -u postgres psql -c "CREATE ROLE ${PG_USER} WITH LOGIN PASSWORD '${PG_PASSWORD}';"
+  sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "${PG_DB}" || sudo -u postgres createdb -O "${PG_USER}" "${PG_DB}"
+
+  write_env
+
+  info "Postgres installed and configured via apt. DATABASE_URL written to ${ENV_FILE}."
+  exit 0
 fi
 
-echo ""
-
-# Step 6: Install Node dependencies
-echo -e "${YELLOW}Step 6: Installing Node.js dependencies...${NC}"
-
-npm install
-cd src/backend
-npm install
-cd ../..
-
-echo -e "${GREEN}✓ Node.js dependencies installed${NC}"
-echo ""
-
-# Step 7: Provide service start instructions
-echo -e "${GREEN}========================================"
-echo "Deployment Complete!"
-echo "========================================${NC}"
-echo ""
-echo "To start the services:"
-echo ""
-echo -e "${YELLOW}1. Start Python PDF processing service:${NC}"
-echo "   cd python-service"
-echo "   source venv/bin/activate"
-echo "   python app.py"
-echo "   (Service will run on http://localhost:5000)"
-echo ""
-echo -e "${YELLOW}2. Start the application (in a new terminal):${NC}"
-echo "   npm run dev"
-echo "   (Frontend: http://localhost:3000)"
-echo "   (Backend: http://localhost:4111)"
-echo ""
-echo -e "${GREEN}✓ All services configured and ready to start!${NC}"
+# 4) If none of the above, provide instructions
+err "Unable to automatically provision PostgreSQL on this machine."
+echo
+echo "Options:"
+echo "  1) Install Docker and re-run this script (recommended)."
+echo "     https://docs.docker.com/get-docker/"
+echo "  2) Install PostgreSQL manually for your OS (Postgres 14+)."
+echo "     Ubuntu/Debian: sudo apt-get install postgresql-14"
+echo "     macOS (Homebrew): brew install postgresql@14"
+echo "     Windows: use installer from https://www.postgresql.org/download/windows or use WSL."
+echo
+echo "After installing Postgres, create a DB/user and set DATABASE_URL in ${ENV_FILE}:"
+echo "  DATABASE_URL=postgresql://<user>:<password>@localhost:${POSTGRES_PORT}/<db>"
+exit 1
