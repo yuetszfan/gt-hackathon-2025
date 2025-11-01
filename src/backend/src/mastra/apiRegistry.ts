@@ -2,8 +2,6 @@ import { registerApiRoute } from '@mastra/core/server';
 import { ChatInputSchema, ChatOutput, chatWorkflow } from './workflows/chatWorkflow';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { createSSEStream } from '../utils/streamUtils';
-import { storage } from './memory';
-import { z } from 'zod';
 
 // Helper function to convert Zod schema to OpenAPI schema
 function toOpenApiSchema(schema: Parameters<typeof zodToJsonSchema>[0]) {

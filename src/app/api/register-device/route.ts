@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
       tags,
       clinicalFiles: processedClinicalFiles,
       smartLinkId,
-      userId: 'rep1', // TODO: Get from authenticated user session
+      userId: 'rep1', // TODO: Get from authenticated user session once authentication is implemented
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
