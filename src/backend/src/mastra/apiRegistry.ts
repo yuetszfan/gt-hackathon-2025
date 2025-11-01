@@ -73,7 +73,7 @@ export const apiRoutes = [
     },
   }),
   
-  registerApiRoute('/api/devices', {
+  registerApiRoute('/devices', {
     method: 'POST',
     handler: async (c) => {
       try {
@@ -95,7 +95,7 @@ export const apiRoutes = [
     },
   }),
   
-  registerApiRoute('/api/embeddings', {
+  registerApiRoute('/embeddings', {
     method: 'POST',
     handler: async (c) => {
       try {

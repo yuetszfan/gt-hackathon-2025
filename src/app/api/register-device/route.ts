@@ -244,7 +244,7 @@ async function storeDeviceInDatabase(device: {
     // Call Mastra backend to store device
     const MASTRA_API_URL = process.env.NEXT_PUBLIC_MASTRA_API_URL || 'http://localhost:4111';
     
-    const response = await fetch(`${MASTRA_API_URL}/api/devices`, {
+    const response = await fetch(`${MASTRA_API_URL}/devices`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -280,7 +280,7 @@ async function storeEmbeddingInDatabase(data: {
     // Call Mastra backend to store embedding
     const MASTRA_API_URL = process.env.NEXT_PUBLIC_MASTRA_API_URL || 'http://localhost:4111';
     
-    const response = await fetch(`${MASTRA_API_URL}/api/embeddings`, {
+    const response = await fetch(`${MASTRA_API_URL}/embeddings`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
