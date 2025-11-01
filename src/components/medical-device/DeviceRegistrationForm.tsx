@@ -32,6 +32,7 @@ interface DeviceRegistrationFormProps {
   onFormDataChange: (data: DeviceFormData) => void;
   validationErrors: Record<string, string>;
   isSubmitting: boolean;
+  onSubmit?: () => void;
 }
 
 export function DeviceRegistrationForm({
@@ -39,6 +40,7 @@ export function DeviceRegistrationForm({
   onFormDataChange,
   validationErrors,
   isSubmitting,
+  onSubmit,
 }: DeviceRegistrationFormProps) {
   const [showUrlInput, setShowUrlInput] = React.useState(false);
   const [urlInput, setUrlInput] = React.useState('');
@@ -54,7 +56,7 @@ export function DeviceRegistrationForm({
     Custom: 'bg-gray-100 text-gray-800 border-gray-200',
   };
 
-  const updateField = (field: keyof DeviceFormData, value: any) => {
+  const updateField = (field: keyof DeviceFormData, value: string | MedicalCategory[] | File[] | (File | { url: string; description: string })[]) => {
     onFormDataChange({
       ...formData,
       [field]: value,
@@ -110,8 +112,12 @@ export function DeviceRegistrationForm({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // This would trigger the Cedar agent's submitDevice tool
-    console.log('Form submitted:', formData);
+    // Call the onSubmit callback if provided
+    if (onSubmit) {
+      onSubmit();
+    } else {
+      console.log('Form submitted:', formData);
+    }
   };
 
   return (

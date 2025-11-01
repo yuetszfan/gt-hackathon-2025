@@ -88,27 +88,89 @@ export default function AddDevicePage() {
     },
   );
 
+  // Function to submit device registration
+  const handleDeviceSubmit = async () => {
+    setIsSubmitting(true);
+    setValidationErrors({});
+
+    try {
+      // Validate required fields
+      const errors: Record<string, string> = {};
+      if (!formData.name) errors.name = 'Device name is required';
+      if (!formData.company) errors.company = 'Company name is required';
+      if (!formData.description) errors.description = 'Description is required';
+      if (!formData.companyProductUrl) errors.companyProductUrl = 'Product URL is required';
+      if (formData.tags.length === 0) errors.tags = 'At least one category is required';
+
+      if (Object.keys(errors).length > 0) {
+        setValidationErrors(errors);
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Prepare form data for submission
+      const submitFormData = new FormData();
+      submitFormData.append('name', formData.name);
+      submitFormData.append('company', formData.company);
+      submitFormData.append('description', formData.description);
+      submitFormData.append('companyProductUrl', formData.companyProductUrl);
+      submitFormData.append('tags', JSON.stringify(formData.tags));
+      submitFormData.append('researchSummary', formData.researchSummary);
+
+      // Add image files
+      formData.images.forEach((image) => {
+        submitFormData.append('images', image);
+      });
+
+      // Separate clinical files and URLs
+      const clinicalFilesList: File[] = [];
+      const clinicalFileUrls: { url: string; description: string }[] = [];
+      
+      formData.clinicalFiles.forEach((file) => {
+        if (file instanceof File) {
+          clinicalFilesList.push(file);
+        } else {
+          clinicalFileUrls.push(file);
+        }
+      });
+
+      // Add clinical files
+      clinicalFilesList.forEach((file) => {
+        submitFormData.append('clinicalFiles', file);
+      });
+
+      // Add clinical file URLs as JSON
+      submitFormData.append('clinicalFileUrls', JSON.stringify(clinicalFileUrls));
+
+      // Submit to API
+      const response = await fetch('/api/register-device', {
+        method: 'POST',
+        body: submitFormData,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to register device');
+      }
+
+      console.log('Device registered successfully:', result);
+
+      // Redirect to devices page
+      window.location.href = '/dashboard/devices';
+    } catch (error) {
+      setIsSubmitting(false);
+      console.error('Failed to register device:', error);
+      alert(`Failed to register device: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
   // Frontend tools for form management
   useRegisterFrontendTool({
     name: 'submitDevice',
     description: 'Submit the device registration form',
     argsSchema: z.object({}),
-    execute: async () => {
-      setIsSubmitting(true);
-
-      try {
-        // Simulate form submission
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-
-        console.log('Submitting device:', formData);
-
-        // Redirect to devices page
-        window.location.href = '/dashboard/devices';
-      } catch {
-        setIsSubmitting(false);
-        console.log('Failed to register device. Please try again.');
-      }
-    },
+    execute: handleDeviceSubmit,
   });
 
   const renderContent = () => (
@@ -118,6 +180,7 @@ export default function AddDevicePage() {
         onFormDataChange={setFormData}
         validationErrors={validationErrors}
         isSubmitting={isSubmitting}
+        onSubmit={handleDeviceSubmit}
       />
     </DashboardLayout>
   );

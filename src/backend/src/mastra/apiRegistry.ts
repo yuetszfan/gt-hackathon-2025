@@ -16,6 +16,8 @@ function toOpenApiSchema(schema: Parameters<typeof zodToJsonSchema>[0]) {
  *
  * - /chat: Standard request-response chat endpoint
  * - /chat/stream: Server-sent events (SSE) endpoint for streaming responses
+ * - /devices: Device storage endpoint
+ * - /embeddings: Embedding storage endpoint
  */
 export const apiRoutes = [
   registerApiRoute('/chat/stream', {
@@ -64,6 +66,48 @@ export const apiRoutes = [
         });
       } catch (error) {
         console.error(error);
+        return c.json({ error: error instanceof Error ? error.message : 'Internal error' }, 500);
+      }
+    },
+  }),
+  
+  registerApiRoute('/devices', {
+    method: 'POST',
+    handler: async (c) => {
+      try {
+        const device = await c.req.json();
+        
+        // Store device in the database
+        // For now, we'll use the storage adapter's underlying connection
+        // In production, you would create proper tables and use SQL queries
+        console.log('Storing device:', device.id, device.name);
+        
+        // TODO: Implement actual database storage
+        // For now, just log that we received the device
+        
+        return c.json({ success: true, deviceId: device.id });
+      } catch (error) {
+        console.error('Error storing device:', error);
+        return c.json({ error: error instanceof Error ? error.message : 'Internal error' }, 500);
+      }
+    },
+  }),
+  
+  registerApiRoute('/embeddings', {
+    method: 'POST',
+    handler: async (c) => {
+      try {
+        const embeddingData = await c.req.json();
+        
+        // Store embedding in the database
+        console.log('Storing embedding:', embeddingData.id, 'for device:', embeddingData.deviceId);
+        
+        // TODO: Implement actual vector database storage
+        // For now, just log that we received the embedding
+        
+        return c.json({ success: true, embeddingId: embeddingData.id });
+      } catch (error) {
+        console.error('Error storing embedding:', error);
         return c.json({ error: error instanceof Error ? error.message : 'Internal error' }, 500);
       }
     },
